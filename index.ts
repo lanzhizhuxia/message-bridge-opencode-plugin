@@ -123,8 +123,11 @@ export const BridgePlugin: Plugin = async ctx => {
         }
       }
 
-      // 全局 listener 只启动一次（mux）
-      if (!globalState.__bridge_listener_started) {
+      // Event listener also gated: TUI instances must not process events
+      // to avoid duplicate message delivery to Feishu.
+      if (!process.env.OPENCODE_SERVE_MODE) {
+        bridgeLogger.info('[Plugin] OPENCODE_SERVE_MODE not set, skip event listener');
+      } else if (!globalState.__bridge_listener_started) {
         globalState.__bridge_listener_started = true;
         startGlobalEventListener(client, mux).catch(err => {
           bridgeLogger.error('[Plugin] startGlobalEventListener failed', err);
