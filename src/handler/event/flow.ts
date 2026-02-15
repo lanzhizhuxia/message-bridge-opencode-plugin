@@ -54,6 +54,14 @@ export async function startGlobalEventListenerWithDeps(
       }
 
       await flushAllEvents(mux, deps);
+
+      // Stream closed normally (not an error). Reconnect unless explicitly stopped.
+      // Without this, a clean server-side close permanently kills the listener.
+      if (deps.listenerState.shouldStopListener) return;
+      bridgeLogger.warn('[Listener] event stream ended (not error), reconnecting...');
+      const delay = Math.min(Math.max(1000, 5000 * (retryCount + 1)), 60000);
+      retryCount++;
+      setTimeout(connect, delay);
     } catch (e) {
       if (deps.listenerState.shouldStopListener) return;
 
@@ -80,6 +88,12 @@ export async function startGlobalEventListenerWithDeps(
         if (!GLOBAL_FORWARD_EVENT_TYPES.has(e.type)) continue;
         await dispatchEventByType(e, api, mux, deps);
       }
+
+      if (deps.listenerState.shouldStopListener) return;
+      bridgeLogger.warn('[Listener] global stream ended (not error), reconnecting...');
+      const delay = Math.min(Math.max(1000, 5000 * (globalRetryCount + 1)), 60000);
+      globalRetryCount++;
+      setTimeout(connectGlobalPermissions, delay);
     } catch (e) {
       if (deps.listenerState.shouldStopListener) return;
       bridgeLogger.error('[Listener] global stream disconnected', e);
