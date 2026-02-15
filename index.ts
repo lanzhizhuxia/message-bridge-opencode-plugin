@@ -125,13 +125,16 @@ export const BridgePlugin: Plugin = async ctx => {
 
       // Event listener also gated: TUI instances must not process events
       // to avoid duplicate message delivery to Feishu.
+      // Use process-level flag (not globalState/globalThis) because opencode
+      // may load the plugin in separate JS contexts with different globalThis.
+      const listenerFlag = '__bridge_listener_started';
       if (!process.env.OPENCODE_SERVE_MODE) {
         bridgeLogger.info('[Plugin] OPENCODE_SERVE_MODE not set, skip event listener');
-      } else if (!globalState.__bridge_listener_started) {
-        globalState.__bridge_listener_started = true;
+      } else if (!(process as any)[listenerFlag]) {
+        (process as any)[listenerFlag] = true;
         startGlobalEventListener(client, mux).catch(err => {
           bridgeLogger.error('[Plugin] startGlobalEventListener failed', err);
-          globalState.__bridge_listener_started = false;
+          (process as any)[listenerFlag] = false;
         });
       } else {
         bridgeLogger.info('[Plugin] global listener already started');
