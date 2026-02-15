@@ -8,6 +8,7 @@ import { bridgeLogger, getBridgeLogFilePath } from './src/logger';
 import { AdapterMux } from './src/handler/mux';
 import { startGlobalEventListener, createIncomingHandler } from './src/handler';
 import { setBridgeFileStoreDir } from './src/bridge/file.store';
+import { tryAcquireListenerLock } from './src/handler/event/listener-lock';
 
 import { FeishuAdapter } from './src/feishu/feishu.adapter';
 import type { BridgeAdapter } from './src/types';
@@ -123,21 +124,16 @@ export const BridgePlugin: Plugin = async ctx => {
         }
       }
 
-      // Event listener also gated: TUI instances must not process events
-      // to avoid duplicate message delivery to Feishu.
-      // Use process-level flag (not globalState/globalThis) because opencode
-      // may load the plugin in separate JS contexts with different globalThis.
-      const listenerFlag = '__bridge_listener_started';
+      // Leader election: only ONE process across all opencode child processes
+      // should run the event listener. File-based lock with O_EXCL ensures this.
       if (!process.env.OPENCODE_SERVE_MODE) {
         bridgeLogger.info('[Plugin] OPENCODE_SERVE_MODE not set, skip event listener');
-      } else if (!(process as any)[listenerFlag]) {
-        (process as any)[listenerFlag] = true;
+      } else if (tryAcquireListenerLock()) {
         startGlobalEventListener(client, mux).catch(err => {
           bridgeLogger.error('[Plugin] startGlobalEventListener failed', err);
-          (process as any)[listenerFlag] = false;
         });
       } else {
-        bridgeLogger.info('[Plugin] global listener already started');
+        bridgeLogger.info('[Plugin] another process owns the listener lock — skipping');
       }
 
       bridgeLogger.info('[Plugin] BridgePlugin ready');
