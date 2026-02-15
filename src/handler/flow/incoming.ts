@@ -197,11 +197,29 @@ export const createIncomingHandlerWithDeps = (
 
       const ensureSession = async () => {
         let sessionId = deps.sessionCache.get(cacheKey);
-        if (!sessionId) {
-          sessionId = await createNewSession();
+        if (sessionId) return sessionId;
+
+        // Retry with backoff: after opencode-serve restart the API may be temporarily unavailable.
+        // Both null returns (API responded but data missing) and exceptions are retried.
+        for (let attempt = 0; attempt < 5; attempt++) {
+          try {
+            sessionId = await createNewSession();
+            if (sessionId) return sessionId;
+          } catch (e) {
+            bridgeLogger.warn(
+              `[Incoming] ensureSession exception attempt=${attempt + 1}/5`,
+              e,
+            );
+          }
+          if (attempt < 4) {
+            const delay = 2000 * Math.pow(2, attempt);
+            bridgeLogger.warn(
+              `[Incoming] ensureSession failed attempt=${attempt + 1}/5, retry in ${delay}ms`,
+            );
+            await new Promise(r => setTimeout(r, delay));
+          }
         }
-        if (!sessionId) throw new Error('Failed to init Session');
-        return sessionId;
+        throw new Error('Failed to init Session after 5 retries');
       };
 
       const cloneParts = (items: Array<TextPartInput | FilePartInput>) =>

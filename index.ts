@@ -95,6 +95,15 @@ export const BridgePlugin: Plugin = async ctx => {
         const adapter = adapterInstances.get(key) || create();
         adapterInstances.set(key, adapter);
         mux.register(key, adapter);
+
+        // Gate: only start adapters (including webhook server) in serve mode.
+        // TUI instances don't need bridge functionality — prevents webhook port stealing.
+        // Set OPENCODE_SERVE_MODE=1 in the opencode-serve wrapper script.
+        if (!process.env.OPENCODE_SERVE_MODE) {
+          bridgeLogger.info(`[Plugin] OPENCODE_SERVE_MODE not set, skip adapter start for ${key}`);
+          continue;
+        }
+
         if (startedAdapters.has(key)) {
           bridgeLogger.info(`[Plugin] adapter already started, skip start adapter=${key}`);
           continue;
