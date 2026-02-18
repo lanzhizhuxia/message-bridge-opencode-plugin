@@ -1,6 +1,6 @@
 import type { ToolPart } from '@opencode-ai/sdk';
 
-export const QUESTION_TIMEOUT_MS = 15 * 60 * 1000;
+export const QUESTION_TIMEOUT_MS = 4 * 60 * 60 * 1000;
 
 export type NormalizedQuestionOption = {
   label: string;
@@ -276,7 +276,7 @@ export function parseUserReply(
   const tokens = splitInputTokens(raw);
 
   for (const token of tokens) {
-    const m = token.match(/^q?(\d+)\s*[:：=]\s*(.+)$/i);
+    const m = token.match(/^q?(\d+)\s*[:：=是]\s*(.+)$/i);
     if (!m) continue;
 
     const questionIndex = Number(m[1]) - 1;
@@ -383,7 +383,7 @@ export function renderQuestionPrompt(state: PendingQuestionState): string {
   } else {
     lines.push('回复示例：`Q1:2,Q2:你的答案` 或 `2,你的答案`');
   }
-  lines.push('15分钟内未回复将自动取消本轮提问。');
+  lines.push('4小时内未回复将自动取消本轮提问。');
 
   return lines.join('\n');
 }

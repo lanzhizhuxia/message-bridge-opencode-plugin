@@ -511,11 +511,11 @@ export const createIncomingHandlerWithDeps = (
 
         const resolved = parseUserReply(text, pendingQuestion);
         if (!resolved.ok) {
-          deps.markQuestionCallHandled(cacheKey, pendingQuestion.messageId, pendingQuestion.callID);
-          deps.clearPendingQuestionForChat(cacheKey);
+          await adapter.sendMessage(chatId, renderReplyHint(pendingQuestion));
           bridgeLogger.info(
-            `[QuestionFlow] invalid-option-exit adapter=${adapterKey} chat=${chatId} sid=${pendingQuestion.sessionId} call=${pendingQuestion.callID} reason=${resolved.reason}`,
+            `[QuestionFlow] parse-failed-hint-sent adapter=${adapterKey} chat=${chatId} sid=${pendingQuestion.sessionId} call=${pendingQuestion.callID} reason=${resolved.reason}`,
           );
+          return;
         } else {
           const sessionId = await ensureSession();
           deps.sessionToAdapterKey.set(sessionId, adapterKey);
