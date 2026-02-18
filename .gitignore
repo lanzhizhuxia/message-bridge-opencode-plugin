@@ -140,3 +140,6 @@ vite.config.ts.timestamp-*
 
 bridge_files
 bridge_files/*
+
+# Lock file (library/plugin - let consumers decide versions)
+package-lock.json
