@@ -105,6 +105,7 @@ function normalizeQuestionItem(item: unknown, index: number): NormalizedQuestion
     .filter((v): v is NormalizedQuestionOption => v !== null);
   const freeText =
     options.length === 0 ||
+    item.custom !== false ||           // opencode SDK: QuestionInfo.custom defaults to true — allow free-text unless explicitly disabled
     item.freeText === true ||
     item.allow_text === true ||
     item.allowFreeText === true ||
@@ -354,6 +355,9 @@ function renderQuestionBlock(question: NormalizedQuestionItem, index: number): s
     lines.push(`${idx + 1}. ${option.label}`);
     if (option.description) lines.push(`   - ${option.description}`);
   });
+  if (question.freeText && question.options.length > 0) {
+    lines.push('也可直接输入自定义内容。');
+  }
   return lines;
 }
 
@@ -377,6 +381,8 @@ export function renderQuestionPrompt(state: PendingQuestionState): string {
     const q = state.payload.questions[0];
     if (q.freeText && q.options.length === 0) {
       lines.push('回复示例：`你的 workspace_id`');
+    } else if (q.freeText) {
+      lines.push('回复示例：`1` 或 `选项文本`，也可直接输入自定义内容');
     } else {
       lines.push('回复示例：`1` 或 `选项文本`');
     }
@@ -389,9 +395,13 @@ export function renderQuestionPrompt(state: PendingQuestionState): string {
 }
 
 export function renderReplyHint(state: PendingQuestionState): string {
-  const hasFreeText = state.payload.questions.some(q => q.freeText && q.options.length === 0);
+  const hasFreeText = state.payload.questions.some(q => q.freeText);
   if (hasFreeText) {
     if (state.payload.questions.length === 1) {
+      const q = state.payload.questions[0];
+      if (q.freeText && q.options.length > 0) {
+        return '未识别你的答案，请回复 `1`/`2`/`3`、选项文本，或直接输入自定义内容。';
+      }
       return '未识别你的答案，请直接回复文本答案。';
     }
     return '未识别你的答案，请回复 `Q1:2,Q2:你的答案`（或按顺序 `2,你的答案`）。';
