@@ -136,10 +136,20 @@ async function armPendingQuestionPrompt(params: {
   const { cacheKey, adapterKey, chatId } = sessionCtx;
 
   if (deps.isQuestionCallHandled(cacheKey, messageId, callID)) return false;
+  
   const existing = deps.chatPendingQuestion.get(cacheKey);
-  if (existing && existing.callID === callID && existing.messageId === messageId) return true;
+  let shouldSendPrompt = true;
 
-  clearPendingQuestionForChat(deps, cacheKey);
+  if (existing && existing.callID === callID && existing.messageId === messageId) {
+     const oldJson = JSON.stringify(existing.payload);
+     const newJson = JSON.stringify(payload);
+     if (oldJson === newJson) {
+       return true;
+     }
+  } else {
+    clearPendingQuestionForChat(deps, cacheKey);
+  }
+
   const pending: PendingQuestionState = {
     key: cacheKey,
     adapterKey,
@@ -153,11 +163,16 @@ async function armPendingQuestionPrompt(params: {
   };
   deps.chatPendingQuestion.set(cacheKey, pending);
 
-  const adapter = mux.get(adapterKey);
-  if (adapter) {
-    await adapter.sendMessage(chatId, renderQuestionPrompt(pending)).catch(() => {});
+  if (shouldSendPrompt) {
+    const adapter = mux.get(adapterKey);
+    if (adapter) {
+      await adapter.sendMessage(chatId, renderQuestionPrompt(pending)).catch(() => {});
+    }
   }
 
+  const existingTimer = deps.pendingQuestionTimers.get(cacheKey);
+  if (existingTimer) clearTimeout(existingTimer);
+  
   const timer = setTimeout(async () => {
     const current = deps.chatPendingQuestion.get(cacheKey);
     if (!current || current.callID !== callID || current.messageId !== messageId) return;
@@ -185,6 +200,9 @@ export async function captureQuestionProxyIfNeeded(params: {
   const { part, sessionId, messageId, mux, deps } = params;
   if (!isQuestionToolPart(part)) return false;
 
+  bridgeLogger.info(
+    `[BridgeFlow] question.tool capture sid=${sessionId} mid=${messageId} callID=${part.callID || '-'} status=${part?.state?.status || '-'}`,
+  );
   const payloadMaybe =
     extractQuestionPayload(part?.state?.input) ||
     extractQuestionPayload((part?.state?.input as Record<string, unknown> | undefined)?.questions) ||
@@ -201,6 +219,7 @@ export async function captureQuestionProxyIfNeeded(params: {
       },
     ]);
   if (fallbackPayload === null) return false;
+  
   if (payloadMaybe === null) {
     bridgeLogger.warn(
       `[BridgeFlow] question.tool parse-fallback sid=${sessionId} mid=${messageId} callID=${part.callID || '-'}`,

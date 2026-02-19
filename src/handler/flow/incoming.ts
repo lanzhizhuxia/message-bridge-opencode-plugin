@@ -375,10 +375,31 @@ export const createIncomingHandlerWithDeps = (
             },
           });
           bridgeLogger.info(
-            `[QuestionFlow] reply sent(v2) sid=${sessionId} requestID=${requestID} answers=${answers.length}`,
+            `[QuestionFlow] reply sent(v2-sdk) sid=${sessionId} requestID=${requestID} answers=${answers.length}`,
           );
           return 'v2';
         }
+
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const client = (api as any)._client;
+          if (client && typeof client.request === 'function') {
+            await client.request({
+              url: `/question/${requestID}/reply`,
+              method: 'POST',
+              body: {
+                answers: answers.map(ans => [ans.selectedLabel]),
+              },
+            });
+            bridgeLogger.info(
+              `[QuestionFlow] reply sent(v2-raw) sid=${sessionId} requestID=${requestID} answers=${answers.length}`,
+            );
+            return 'v2';
+          }
+        } catch (err) {
+          bridgeLogger.warn(`[QuestionFlow] v2-raw failed sid=${sessionId} requestID=${requestID}`, err);
+        }
+
         bridgeLogger.warn(
           `[QuestionFlow] question.reply endpoint unavailable sid=${sessionId} requestID=${requestID}, fallback=resume-prompt`,
         );
