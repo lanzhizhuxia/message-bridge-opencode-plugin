@@ -104,6 +104,10 @@ function clearAllPendingQuestions(deps: EventFlowDeps) {
     clearTimeout(timer);
   }
   deps.pendingQuestionTimers.clear();
+  for (const timer of deps.pendingQuestionPromptTimers.values()) {
+    clearTimeout(timer);
+  }
+  deps.pendingQuestionPromptTimers.clear();
   deps.chatPendingQuestion.clear();
 }
 

@@ -35,6 +35,10 @@ export type PendingQuestionState = {
   sessionId: string;
   messageId: string;
   callID: string;
+  /** DAVID ISSUE-091: opencode v1.3.9+ question request ID (que_xxx) — required for /question/{id}/reply */
+  questionRequestId?: string;
+  /** DAVID ISSUE-091: whether the question prompt has been sent to IM */
+  promptSent: boolean;
   payload: NormalizedQuestionPayload;
   createdAt: number;
   dueAt: number;

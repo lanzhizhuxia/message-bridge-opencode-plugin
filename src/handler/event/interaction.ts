@@ -92,6 +92,11 @@ function clearPendingQuestionForChat(deps: EventFlowDeps, cacheKey: string) {
     clearTimeout(timer);
     deps.pendingQuestionTimers.delete(cacheKey);
   }
+  const promptTimer = deps.pendingQuestionPromptTimers.get(cacheKey);
+  if (promptTimer) {
+    clearTimeout(promptTimer);
+    deps.pendingQuestionPromptTimers.delete(cacheKey);
+  }
   deps.chatPendingQuestion.delete(cacheKey);
 }
 
@@ -122,15 +127,20 @@ function permissionSignature(input: {
   return [input.type || '', input.title || '', patternText, input.callID || ''].join('::');
 }
 
+// DAVID ISSUE-091: Prompt delay for Path A (tool part capture). Path B (question.asked) cancels this.
+const QUESTION_PROMPT_FALLBACK_MS = 8_000;
+
 async function armPendingQuestionPrompt(params: {
   sessionId: string;
   messageId: string;
   callID: string;
+  questionRequestId?: string;
   payload: NormalizedQuestionPayload;
+  sendPrompt: boolean;
   mux: AdapterMux;
   deps: EventFlowDeps;
 }): Promise<boolean> {
-  const { sessionId, messageId, callID, payload, mux, deps } = params;
+  const { sessionId, messageId, callID, questionRequestId, payload, sendPrompt, mux, deps } = params;
   const sessionCtx = getCacheKeyBySession(sessionId, deps);
   if (!sessionCtx) return false;
   const { cacheKey, adapterKey, chatId } = sessionCtx;
@@ -138,14 +148,35 @@ async function armPendingQuestionPrompt(params: {
   if (deps.isQuestionCallHandled(cacheKey, messageId, callID)) return false;
   
   const existing = deps.chatPendingQuestion.get(cacheKey);
-  let shouldSendPrompt = true;
 
   if (existing && existing.callID === callID && existing.messageId === messageId) {
-     const oldJson = JSON.stringify(existing.payload);
-     const newJson = JSON.stringify(payload);
-     if (oldJson === newJson) {
-       return true;
-     }
+    if (questionRequestId && !existing.questionRequestId) {
+      existing.questionRequestId = questionRequestId;
+    }
+    if (sendPrompt && !existing.promptSent) {
+      existing.payload = payload;
+      existing.promptSent = true;
+      deps.chatPendingQuestion.set(cacheKey, existing);
+      const promptTimer = deps.pendingQuestionPromptTimers.get(cacheKey);
+      if (promptTimer) {
+        clearTimeout(promptTimer);
+        deps.pendingQuestionPromptTimers.delete(cacheKey);
+      }
+      const adapter = mux.get(adapterKey);
+      if (adapter) {
+        await adapter.sendMessage(chatId, renderQuestionPrompt(existing)).catch(() => {});
+      }
+      return true;
+    }
+    if (!sendPrompt && !existing.promptSent) {
+      const oldJson = JSON.stringify(existing.payload);
+      const newJson = JSON.stringify(payload);
+      if (oldJson !== newJson) {
+        existing.payload = payload;
+        deps.chatPendingQuestion.set(cacheKey, existing);
+      }
+    }
+    return true;
   } else {
     clearPendingQuestionForChat(deps, cacheKey);
   }
@@ -157,17 +188,35 @@ async function armPendingQuestionPrompt(params: {
     sessionId,
     messageId,
     callID,
+    questionRequestId,
+    promptSent: sendPrompt,
     payload,
     createdAt: Date.now(),
     dueAt: Date.now() + QUESTION_TIMEOUT_MS,
   };
   deps.chatPendingQuestion.set(cacheKey, pending);
 
-  if (shouldSendPrompt) {
+  if (sendPrompt) {
     const adapter = mux.get(adapterKey);
     if (adapter) {
       await adapter.sendMessage(chatId, renderQuestionPrompt(pending)).catch(() => {});
     }
+  } else {
+    const promptFallback = setTimeout(async () => {
+      const current = deps.chatPendingQuestion.get(cacheKey);
+      if (!current || current.callID !== callID || current.promptSent) return;
+      current.promptSent = true;
+      deps.chatPendingQuestion.set(cacheKey, current);
+      deps.pendingQuestionPromptTimers.delete(cacheKey);
+      bridgeLogger.info(
+        `[QuestionFlow] prompt-fallback-timer fired sid=${sessionId} callID=${callID}`,
+      );
+      const fallbackAdapter = mux.get(current.adapterKey);
+      if (fallbackAdapter) {
+        await fallbackAdapter.sendMessage(current.chatId, renderQuestionPrompt(current)).catch(() => {});
+      }
+    }, QUESTION_PROMPT_FALLBACK_MS);
+    deps.pendingQuestionPromptTimers.set(cacheKey, promptFallback);
   }
 
   const existingTimer = deps.pendingQuestionTimers.get(cacheKey);
@@ -230,6 +279,7 @@ export async function captureQuestionProxyIfNeeded(params: {
     sessionId,
     messageId,
     callID,
+    sendPrompt: false,
     payload: fallbackPayload,
     mux,
     deps,
@@ -282,6 +332,8 @@ export async function handleQuestionAskedEvent(
         sessionId,
         messageId: fallbackMessageId,
         callID: fallbackCallID,
+        questionRequestId: readStringField(props, 'id') || undefined,
+        sendPrompt: true,
         payload: fallbackPayload,
         mux,
         deps,
@@ -319,11 +371,14 @@ export async function handleQuestionAskedEvent(
     readStringField(tool || {}, 'callID', 'callId') ||
     readStringField(props, 'id', 'requestID', 'requestId') ||
     `question-${messageId}`;
+  const questionRequestId = readStringField(props, 'id') || undefined;
 
   await armPendingQuestionPrompt({
     sessionId,
     messageId,
     callID,
+    questionRequestId,
+    sendPrompt: true,
     payload: payloadMaybe,
     mux,
     deps,

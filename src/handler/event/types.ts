@@ -24,6 +24,7 @@ export type EventFlowDeps = {
   chatPendingQuestion: Map<string, PendingQuestionState>;
   chatPendingAuthorization: Map<string, PendingAuthorizationState>;
   pendingQuestionTimers: Map<string, NodeJS.Timeout>;
+  pendingQuestionPromptTimers: Map<string, NodeJS.Timeout>;
   pendingAuthorizationTimers: Map<string, NodeJS.Timeout>;
   isQuestionCallHandled: (cacheKey: string, messageId: string, callID: string) => boolean;
   markQuestionCallHandled: (cacheKey: string, messageId: string, callID: string) => void;
