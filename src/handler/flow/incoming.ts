@@ -364,15 +364,14 @@ export const createIncomingHandlerWithDeps = (
         requestID: string,
         answers: Array<{ selectedLabel: string }>,
       ): Promise<'v2' | 'fallback'> => {
+        // DAVID ISSUE-091: SDK v1.1.48 question.reply uses flat params { requestID, answers }
         const apiAny = api as unknown as {
           question?: { reply?: (args: unknown) => Promise<unknown> };
         };
         if (apiAny.question?.reply) {
           await apiAny.question.reply({
-            path: { requestID },
-            body: {
-              answers: answers.map(ans => [ans.selectedLabel]),
-            },
+            requestID,
+            answers: answers.map(ans => [ans.selectedLabel]),
           });
           bridgeLogger.info(
             `[QuestionFlow] reply sent(v2-sdk) sid=${sessionId} requestID=${requestID} answers=${answers.length}`,
@@ -404,6 +403,36 @@ export const createIncomingHandlerWithDeps = (
           `[QuestionFlow] question.reply endpoint unavailable sid=${sessionId} requestID=${requestID}, fallback=resume-prompt`,
         );
         return 'fallback';
+      };
+
+      // DAVID ISSUE-091: resolve question request ID (que_xxx) via GET /question API
+      const resolveQuestionRequestId = async (
+        callID: string,
+      ): Promise<string | undefined> => {
+        try {
+          const apiAny = api as unknown as {
+            question?: { list?: (args?: unknown) => Promise<{ data?: Array<{ id?: string; tool?: { callID?: string } }> }> };
+          };
+          if (apiAny.question?.list) {
+            const resp = await Promise.race([
+              apiAny.question.list(),
+              new Promise<never>((_, reject) => setTimeout(() => reject(new Error('resolveQuestionRequestId timeout 3s')), 3000)),
+            ]);
+            const pending = resp?.data;
+            if (Array.isArray(pending)) {
+              const match = pending.find(q => q.tool?.callID === callID);
+              if (match?.id) {
+                bridgeLogger.info(
+                  `[QuestionFlow] resolved questionRequestId=${match.id} from callID=${callID}`,
+                );
+                return match.id;
+              }
+            }
+          }
+        } catch (err) {
+          bridgeLogger.warn(`[QuestionFlow] resolveQuestionRequestId failed callID=${callID}`, err);
+        }
+        return undefined;
       };
 
       const pendingAuthorization = deps.chatPendingAuthorization.get(cacheKey);
@@ -543,15 +572,26 @@ export const createIncomingHandlerWithDeps = (
           deps.sessionToCtx.set(sessionId, { chatId, senderId });
           let questionReplied = false;
           try {
-            const mode = await replyQuestionRequest(
-              sessionId,
-              pendingQuestion.callID,
-              resolved.answers,
-            );
-            questionReplied = mode === 'v2';
+            let questionReplyId = pendingQuestion.questionRequestId;
+            if (!questionReplyId) {
+              questionReplyId = await resolveQuestionRequestId(pendingQuestion.callID);
+            }
+            if (!questionReplyId) {
+              bridgeLogger.warn(
+                `[QuestionFlow] no questionRequestId for callID=${pendingQuestion.callID}, fallback to resume-prompt`,
+              );
+            }
+            if (questionReplyId) {
+              const mode = await replyQuestionRequest(
+                sessionId,
+                questionReplyId,
+                resolved.answers,
+              );
+              questionReplied = mode === 'v2';
+            }
           } catch (replyErr) {
             bridgeLogger.warn(
-              `[QuestionFlow] reply failed sid=${sessionId} requestID=${pendingQuestion.callID}`,
+              `[QuestionFlow] reply failed sid=${sessionId} requestID=${pendingQuestion.questionRequestId || pendingQuestion.callID}`,
               replyErr,
             );
           }

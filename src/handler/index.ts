@@ -29,6 +29,7 @@ const chatMaxFileRetry: Map<string, number> =
   globalState.__bridge_max_file_retry || new Map<string, number>();
 const chatPendingQuestion = new Map<string, PendingQuestionState>();
 const pendingQuestionTimers = new Map<string, NodeJS.Timeout>();
+const pendingQuestionPromptTimers = new Map<string, NodeJS.Timeout>();
 const chatHandledQuestionCalls = new LRUCache<string, Set<string>>({
   max: 2000,
   ttl: 6 * 60 * 60 * 1000,
@@ -78,6 +79,11 @@ function clearPendingQuestionForChat(cacheKey: string) {
     clearTimeout(timer);
     pendingQuestionTimers.delete(cacheKey);
   }
+  const promptTimer = pendingQuestionPromptTimers.get(cacheKey);
+  if (promptTimer) {
+    clearTimeout(promptTimer);
+    pendingQuestionPromptTimers.delete(cacheKey);
+  }
   chatPendingQuestion.delete(cacheKey);
 }
 
@@ -86,6 +92,10 @@ function clearAllPendingQuestions() {
     clearTimeout(timer);
   }
   pendingQuestionTimers.clear();
+  for (const timer of pendingQuestionPromptTimers.values()) {
+    clearTimeout(timer);
+  }
+  pendingQuestionPromptTimers.clear();
   chatPendingQuestion.clear();
   clearAllHandledQuestionCalls();
 }
@@ -126,6 +136,7 @@ export async function startGlobalEventListener(api: OpencodeClient, mux: Adapter
     chatPendingQuestion,
     chatPendingAuthorization,
     pendingQuestionTimers,
+    pendingQuestionPromptTimers,
     pendingAuthorizationTimers,
     isQuestionCallHandled,
     markQuestionCallHandled,
@@ -152,6 +163,7 @@ export function stopGlobalEventListener() {
     chatPendingQuestion,
     chatPendingAuthorization,
     pendingQuestionTimers,
+    pendingQuestionPromptTimers,
     pendingAuthorizationTimers,
     isQuestionCallHandled,
     markQuestionCallHandled,
