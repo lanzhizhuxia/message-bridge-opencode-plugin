@@ -59,6 +59,46 @@ const BUFFER_SWEEP_BATCH_SIZE = 120;
 const lastRouteMissWarnAt = new LRUCache<string, number>({ max: 4000, ttl: 10 * 60 * 1000 });
 const forwardedSchedulerUserParts = new LRUCache<string, true>({ max: 8000, ttl: 20 * 60 * 1000 });
 
+// ── ISSUE-166: Metrics counters ──
+const metricsCounters = {
+  route_miss_total: new Map<string, number>(),
+  route_restore_total: new Map<string, number>(),
+  unknown_event_total: new Map<string, number>(),
+};
+
+function incrMetric(map: Map<string, number>, key: string): void {
+  map.set(key, (map.get(key) ?? 0) + 1);
+}
+
+let metricsLogTimer: ReturnType<typeof setInterval> | null = null;
+
+export function startMetricsLogger(): void {
+  if (metricsLogTimer) return;
+  metricsLogTimer = setInterval(() => {
+    const hasAny =
+      metricsCounters.route_miss_total.size > 0 ||
+      metricsCounters.route_restore_total.size > 0 ||
+      metricsCounters.unknown_event_total.size > 0;
+    if (!hasAny) return;
+    const snap = {
+      route_miss: Object.fromEntries(metricsCounters.route_miss_total),
+      route_restore: Object.fromEntries(metricsCounters.route_restore_total),
+      unknown_event: Object.fromEntries(metricsCounters.unknown_event_total),
+    };
+    bridgeLogger.info('[BridgeMetrics]', JSON.stringify(snap));
+    metricsCounters.route_miss_total.clear();
+    metricsCounters.route_restore_total.clear();
+    metricsCounters.unknown_event_total.clear();
+  }, 5 * 60 * 1000);
+}
+
+export function stopMetricsLogger(): void {
+  if (metricsLogTimer) {
+    clearInterval(metricsLogTimer);
+    metricsLogTimer = null;
+  }
+}
+
 function clearAllPendingQuestions(deps: EventFlowDeps) {
   for (const timer of deps.pendingQuestionTimers.values()) {
     clearTimeout(timer);
@@ -136,6 +176,7 @@ function warnRouteMissOnce(eventType: string, sessionId: string, messageId?: str
     return;
   }
   lastRouteMissWarnAt.set(key, now);
+  incrMetric(metricsCounters.route_miss_total, eventType);
   bridgeLogger.warn(
     `[BridgeFlow] route.miss event=${eventType} sid=${sessionId} mid=${
       messageId || '-'
@@ -178,6 +219,8 @@ function hydrateSessionRouteFromMetadata(
     bridgeLogger.info(
       `[BridgeFlow] hydrated-session-route sid=${sessionId} adapter=${adapterKey} chat=${chatId}`
     );
+    // ISSUE-166: persist hydrated route to SQLite
+    deps.routingStore?.upsert(sessionId, chatId, adapterKey, senderId);
   }
   return true;
 }
@@ -242,9 +285,26 @@ export async function flushAllEvents(mux: AdapterMux, deps: EventFlowDeps) {
 }
 
 function resolveSessionTarget(sessionId: string, mux: AdapterMux, deps: EventFlowDeps) {
-  const ctx = deps.sessionToCtx.get(sessionId);
-  const adapterKey = deps.sessionToAdapterKey.get(sessionId);
-  const adapter = adapterKey ? mux.get(adapterKey) : undefined;
+  let ctx = deps.sessionToCtx.get(sessionId);
+  let adapterKey = deps.sessionToAdapterKey.get(sessionId);
+  let adapter = adapterKey ? mux.get(adapterKey) : undefined;
+
+  // ISSUE-166: attempt SQLite recovery on route miss
+  if ((!ctx || !adapter) && deps.routingStore) {
+    const stored = deps.routingStore.tryGet(sessionId);
+    if (stored) {
+      deps.sessionToCtx.set(sessionId, { chatId: stored.chatId, senderId: stored.senderId });
+      deps.sessionToAdapterKey.set(sessionId, stored.adapterKey);
+      ctx = { chatId: stored.chatId, senderId: stored.senderId };
+      adapterKey = stored.adapterKey;
+      adapter = mux.get(stored.adapterKey);
+      incrMetric(metricsCounters.route_restore_total, 'sqlite');
+      bridgeLogger.info(
+        `[BridgeFlow] route-restore-sqlite sid=${sessionId} adapter=${stored.adapterKey} chat=${stored.chatId}`
+      );
+    }
+  }
+
   if (!ctx || !adapter) return null;
   return { ctx, adapter };
 }
@@ -625,6 +685,24 @@ export async function dispatchEventByType(
     return;
   }
 
+  // ISSUE-166: handle message.part.delta (incremental update from OpenCode v1.2.0+)
+  if (e.type === 'message.part.delta') {
+    // Debug sampling: log full event JSON when BRIDGE_DEBUG_DELTA=1 (5% sample rate)
+    if (process.env.BRIDGE_DEBUG_DELTA === '1' && Math.random() < 0.05) {
+      try {
+        bridgeLogger.info('[BridgeFlow] delta-sample', JSON.stringify(e));
+      } catch (_e) { /* ignore serialization errors */ }
+    }
+    // Wire shape is expected to match message.part.updated (same properties.part + properties.delta)
+    const pe = e as EventMessagePartUpdated;
+    const p = pe.properties.part;
+    bridgeLogger.debug(
+      `[BridgeFlowDebug] part.delta sid=${p.sessionID} mid=${p.messageID} type=${p.type} deltaLen=${(pe.properties.delta || '').length}`
+    );
+    await handleMessagePartUpdatedEvent(pe, api, mux, deps);
+    return;
+  }
+
   if (e.type === 'session.error') {
     await handleSessionErrorEvent(e as EventSessionError, mux, deps);
     return;
@@ -685,6 +763,7 @@ export async function dispatchEventByType(
     return;
   }
 
+  incrMetric(metricsCounters.unknown_event_total, e.type);
   bridgeLogger.warn(`[BridgeFlow] event.unknown type=${e.type}`);
 }
 
@@ -708,4 +787,8 @@ export function resetEventDispatchState(deps: EventFlowDeps) {
   lastRouteMissWarnAt.clear();
   forwardedSchedulerUserParts.clear();
   resetInteractionState();
+  // ISSUE-166: reset metrics
+  metricsCounters.route_miss_total.clear();
+  metricsCounters.route_restore_total.clear();
+  metricsCounters.unknown_event_total.clear();
 }

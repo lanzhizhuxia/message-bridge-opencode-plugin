@@ -11,6 +11,7 @@ export const KNOWN_EVENT_TYPES = new Set<string>([
   'message.updated',
   'message.removed',
   'message.part.updated',
+  'message.part.delta',
   'message.part.removed',
   'permission.updated',
   'permission.replied',

@@ -123,6 +123,9 @@ export type IncomingFlowDeps = {
   markQuestionCallHandled: (cacheKey: string, messageId: string, callID: string) => void;
   clearAllPendingQuestions: () => void;
   formatUserError: (err: unknown) => string;
+  routingStore?: {
+    upsert(sessionId: string, chatId: string, adapterKey: string, senderId: string): void;
+  };
 };
 
 export const createIncomingHandlerWithDeps = (
@@ -188,6 +191,8 @@ export const createIncomingHandlerWithDeps = (
           deps.sessionCache.set(cacheKey, sessionId);
           deps.sessionToAdapterKey.set(sessionId, adapterKey);
           deps.sessionToCtx.set(sessionId, { chatId, senderId });
+          // ISSUE-166: persist session routing
+          deps.routingStore?.upsert(sessionId, chatId, adapterKey, senderId);
           deps.chatAgent.set(cacheKey, previousAgent || DEFAULT_AGENT_ID);
           if (previousModel) deps.chatModel.set(cacheKey, previousModel);
           else deps.chatModel.delete(cacheKey);
@@ -541,6 +546,8 @@ export const createIncomingHandlerWithDeps = (
           const sessionId = await ensureSession();
           deps.sessionToAdapterKey.set(sessionId, adapterKey);
           deps.sessionToCtx.set(sessionId, { chatId, senderId });
+          // ISSUE-166: persist session routing
+          deps.routingStore?.upsert(sessionId, chatId, adapterKey, senderId);
           let questionReplied = false;
           try {
             const mode = await replyQuestionRequest(
@@ -690,6 +697,8 @@ export const createIncomingHandlerWithDeps = (
       const sessionId = await ensureSession();
       deps.sessionToAdapterKey.set(sessionId, adapterKey);
       deps.sessionToCtx.set(sessionId, { chatId, senderId });
+      // ISSUE-166: persist session routing
+      deps.routingStore?.upsert(sessionId, chatId, adapterKey, senderId);
 
       const partList: Array<TextPartInput | FilePartInput> = [];
       if (text && text.trim()) {

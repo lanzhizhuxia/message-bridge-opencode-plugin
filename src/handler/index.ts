@@ -8,6 +8,9 @@ import { startGlobalEventListenerWithDeps, stopGlobalEventListenerWithDeps } fro
 import { globalState } from '../utils';
 import type { PendingAuthorizationState, PendingQuestionState } from './proxy';
 import { extractErrorMessage } from './shared';
+import { RoutingStore, isRoutingStoreEnabled } from '../store/routing-store';
+import { closeDb } from '../store/db';
+import { startMetricsLogger, stopMetricsLogger } from './event/dispatch';
 
 type SessionContext = { chatId: string; senderId: string };
 type SelectedModel = { providerID: string; modelID: string; name?: string };
@@ -39,6 +42,10 @@ globalState.__bridge_max_file_size = chatMaxFileSizeMb;
 globalState.__bridge_max_file_retry = chatMaxFileRetry;
 
 const listenerState = { isListenerStarted: false, shouldStopListener: false };
+
+// ISSUE-166: RoutingStore singleton (lazy, only if feature flag enabled)
+const routingStore = isRoutingStoreEnabled() ? new RoutingStore() : undefined;
+let sweepTimer: ReturnType<typeof setInterval> | null = null;
 
 function buildQuestionCallToken(messageId: string, callID: string): string {
   return `${messageId}::${callID}`;
@@ -129,8 +136,14 @@ export async function startGlobalEventListener(api: OpencodeClient, mux: Adapter
     pendingAuthorizationTimers,
     isQuestionCallHandled,
     markQuestionCallHandled,
+    routingStore,
   });
 }
+  // ISSUE-166: start metrics logger + sweep timer
+  if (routingStore) {
+    sweepTimer = setInterval(() => routingStore.sweepExpired(), 10 * 60 * 1000);
+  }
+  startMetricsLogger();
 
 export function stopGlobalEventListener() {
   clearAllPendingAuthorizations();
@@ -155,8 +168,18 @@ export function stopGlobalEventListener() {
     pendingAuthorizationTimers,
     isQuestionCallHandled,
     markQuestionCallHandled,
+    routingStore,
   });
 }
+  // ISSUE-166: cleanup
+  stopMetricsLogger();
+  if (sweepTimer) {
+    clearInterval(sweepTimer);
+    sweepTimer = null;
+  }
+  if (routingStore) {
+    closeDb();
+  }
 
 export const createIncomingHandler = (api: OpencodeClient, mux: AdapterMux, adapterKey: string) =>
   createIncomingHandlerWithDeps(api, mux, adapterKey, {
@@ -179,4 +202,5 @@ export const createIncomingHandler = (api: OpencodeClient, mux: AdapterMux, adap
     markQuestionCallHandled,
     clearAllPendingQuestions,
     formatUserError,
+    routingStore,
   });

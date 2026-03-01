@@ -27,4 +27,9 @@ export type EventFlowDeps = {
   pendingAuthorizationTimers: Map<string, NodeJS.Timeout>;
   isQuestionCallHandled: (cacheKey: string, messageId: string, callID: string) => boolean;
   markQuestionCallHandled: (cacheKey: string, messageId: string, callID: string) => void;
+  routingStore?: {
+    upsert(sessionId: string, chatId: string, adapterKey: string, senderId: string): void;
+    tryGet(sessionId: string): { chatId: string; adapterKey: string; senderId: string } | null;
+    sweepExpired(): void;
+  };
 };
