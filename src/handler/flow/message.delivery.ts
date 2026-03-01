@@ -3,7 +3,9 @@ import { simpleHash } from '../../bridge/buffer';
 import type { MessageBuffer } from '../../bridge/buffer';
 import { sleep } from '../../utils';
 import { bridgeLogger } from '../../logger';
-
+import { getQuotaLedger } from '../../store/quota-ledger';
+import { isFeatureEnabled } from '../../store/db';
+import { AGENT_LARK } from '../../constants';
 type SessionContext = { chatId: string; senderId: string };
 
 function getEditRetryDelay(adapter: BridgeAdapter): number {
@@ -17,6 +19,7 @@ export async function safeEditWithRetry(
   chatId: string,
   platformMsgId: string,
   content: string,
+  opts?: { suppressFallback?: boolean },
 ): Promise<string | null> {
   let ok = false;
   try {
@@ -45,6 +48,15 @@ export async function safeEditWithRetry(
   bridgeLogger.warn(
     `[BridgeFlowDebug] edit failed retry chat=${chatId} msg=${platformMsgId} fallback=sendMessage contentLen=${content.length}`,
   );
+  // ISSUE-166 Phase 2: Suppress sendMessage fallback in constrained/critical mode
+  // to avoid doubling API call count (sendMessage fallback creates a NEW message).
+  const suppress = opts?.suppressFallback ?? false;
+  if (suppress) {
+    bridgeLogger.warn(
+      `[BridgeFlowDebug] edit failed retry, fallback suppressed chat=${chatId} msg=${platformMsgId}`,
+    );
+    return null;
+  }
 
   // Fallback for platforms that don't support edit semantics well.
   const sent = await adapter.sendMessage(chatId, content);

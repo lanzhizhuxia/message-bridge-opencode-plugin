@@ -27,6 +27,8 @@ import {
 import { LoggerLevel } from '@larksuiteoapi/node-sdk';
 import { BRIDGE_FEISHU_RESPONSE_TIMEOUT_MS } from '../constants';
 import { sanitizeLarkMdForCard } from '../utils';
+import { withRateLimitRetry, isRateLimitError, isQuotaExhaustedError, recordRateLimitHit, recordQuotaExhaustedHit } from './rate-limit';
+import { getQuotaLedger } from '../store/quota-ledger';
 
 function clip(s: string, n = 2000) {
   if (!s) return '';
@@ -617,6 +619,31 @@ export class FeishuClient {
     }
   }
 
+  /**
+   * ISSUE-166 Phase 2: Wraps runWithTenantRetry with rate-limit retry + quota recording.
+   * Use for sendMessage/editMessage API calls to count towards Feishu quota.
+   */
+  private async runWithRateLimitAndQuota<T>(
+    fn: (options?: TenantRequestOptions) => Promise<T>,
+    label: string,
+  ): Promise<T> {
+    try {
+      const result = await withRateLimitRetry(
+        () => this.runWithTenantRetry(fn),
+        { label },
+      );
+      // Record successful API call to quota ledger
+      getQuotaLedger()?.recordCall();
+      return result;
+    } catch (e) {
+      // Track error metrics
+      if (isRateLimitError(e)) recordRateLimitHit();
+      if (isQuotaExhaustedError(e)) recordQuotaExhaustedHit();
+      throw e;
+    }
+  }
+
+
   private async buildFilePart(
     messageId: string,
     msgType: string,
@@ -927,7 +954,7 @@ export class FeishuClient {
       const finalContent = isCard ? text : this.makeCard(text);
 
       const res = await this.withResponseTimeout(
-        this.runWithTenantRetry(options =>
+        this.runWithRateLimitAndQuota(options =>
           this.apiClient.im.message.create(
             {
               params: { receive_id_type: 'chat_id' },
@@ -939,6 +966,7 @@ export class FeishuClient {
             },
             options,
           ),
+          'sendMessage',
         ),
         'sendMessage(interactive)',
       );
@@ -966,7 +994,7 @@ export class FeishuClient {
   async editMessage(chatId: string, messageId: string, text: string): Promise<boolean> {
     try {
       const res = await this.withResponseTimeout(
-        this.runWithTenantRetry(options =>
+        this.runWithRateLimitAndQuota(options =>
           this.apiClient.im.message.patch(
             {
               path: { message_id: messageId },
@@ -976,6 +1004,7 @@ export class FeishuClient {
             },
             options,
           ),
+          'editMessage',
         ),
         'editMessage(interactive)',
       );

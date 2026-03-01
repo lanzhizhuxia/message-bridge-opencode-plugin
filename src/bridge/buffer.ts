@@ -7,6 +7,10 @@ import {
   SAFE_MAX_TOOL_OUTPUT,
 } from '../constants';
 import { getUpdateIntervalByAdapter } from '../utils';
+import { AGENT_LARK } from '../constants';
+import { isFeatureEnabled } from '../store/db';
+import { getOrCreateCoalescer } from '../feishu/adaptive-coalescer';
+import { getQuotaLedger } from '../store/quota-ledger';
 
 export type BufferStatus = 'streaming' | 'done' | 'aborted' | 'error';
 
@@ -275,7 +279,22 @@ export function applyPartToBuffer(buffer: MessageBuffer, part: Part, delta?: str
   }
 }
 
-export function shouldFlushNow(buffer: MessageBuffer, adapterKey?: string): boolean {
+export function shouldFlushNow(buffer: MessageBuffer, adapterKey?: string, messageId?: string): boolean {
+  // ISSUE-166 Phase 2: Use adaptive coalescing for Feishu when MVP166 enabled
+  if (
+    messageId &&
+    adapterKey === AGENT_LARK &&
+    isFeatureEnabled()
+  ) {
+    const coalescer = getOrCreateCoalescer(messageId);
+    const ledger = getQuotaLedger();
+    const level = ledger?.getDegradationLevel() ?? 'normal';
+    const currentChars = buffer.text.length + buffer.reasoning.length;
+    const isFinal = buffer.status === 'done' || buffer.status === 'error' || buffer.status === 'aborted';
+    return coalescer.shouldFlush(level, currentChars, isFinal);
+  }
+
+  // Legacy path: fixed interval for non-Feishu or when MVP166 disabled
   const now = Date.now();
   const timeSinceLastUpdate = now - buffer.lastUpdateTime;
   const interval = getUpdateIntervalByAdapter(adapterKey);

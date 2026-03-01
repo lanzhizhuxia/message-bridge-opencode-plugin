@@ -20,6 +20,11 @@ import {
   applyPartToBuffer,
   shouldFlushNow,
 } from '../../bridge/buffer';
+import { getOrCreateCoalescer, getCoalescerMetrics } from '../../feishu/adaptive-coalescer';
+import { getRateLimitMetrics } from '../../feishu/rate-limit';
+import { getQuotaLedger } from '../../store/quota-ledger';
+import { isFeatureEnabled } from '../../store/db';
+import { AGENT_LARK } from '../../constants';
 import {
   safeEditWithRetry,
   flushAll as flushAllMessages,
@@ -75,15 +80,28 @@ let metricsLogTimer: ReturnType<typeof setInterval> | null = null;
 export function startMetricsLogger(): void {
   if (metricsLogTimer) return;
   metricsLogTimer = setInterval(() => {
+    // ISSUE-166 Phase 2: log quota usage if available
+    const quotaLedger = getQuotaLedger();
+    const quotaSnap = quotaLedger ? quotaLedger.getUsageSummary() : null;
+    const rateLimitSnap = getRateLimitMetrics();
+    const coalescerSnap = getCoalescerMetrics();
     const hasAny =
       metricsCounters.route_miss_total.size > 0 ||
       metricsCounters.route_restore_total.size > 0 ||
-      metricsCounters.unknown_event_total.size > 0;
+      metricsCounters.unknown_event_total.size > 0 ||
+      quotaSnap !== null ||
+      rateLimitSnap.rateLimitHits > 0 ||
+      rateLimitSnap.quotaExhaustedHits > 0;
     if (!hasAny) return;
     const snap = {
       route_miss: Object.fromEntries(metricsCounters.route_miss_total),
       route_restore: Object.fromEntries(metricsCounters.route_restore_total),
       unknown_event: Object.fromEntries(metricsCounters.unknown_event_total),
+      ...(quotaSnap ? { quota: quotaSnap } : {}),
+      ...(rateLimitSnap.rateLimitHits > 0 || rateLimitSnap.quotaExhaustedHits > 0
+        ? { rateLimit: rateLimitSnap }
+        : {}),
+      coalescers: coalescerSnap,
     };
     bridgeLogger.info('[BridgeMetrics]', JSON.stringify(snap));
     metricsCounters.route_miss_total.clear();
@@ -497,7 +515,7 @@ async function handleMessagePartUpdatedEvent(
     pruneMessageBuffers(deps);
   }
 
-  if (!shouldFlushNow(buffer, adapterKey || undefined)) {
+  if (!shouldFlushNow(buffer, adapterKey || undefined, messageId)) {
     bridgeLogger.debug(
       `[BridgeFlowDebug] skip-flush sid=${sessionId} mid=${messageId} reason=throttle`
     );
@@ -530,17 +548,27 @@ async function handleMessagePartUpdatedEvent(
     if (sent) {
       buffer.platformMsgId = sent;
       buffer.lastDisplayHash = hash;
+      // ISSUE-166: record coalescer flush
+      getOrCreateCoalescer(messageId).recordFlush(buffer.text.length + buffer.reasoning.length);
     }
     return;
   }
 
-  const ok = await safeEditWithRetry(adapter, ctx.chatId, buffer.platformMsgId, display);
+  // ISSUE-166 Phase 2: suppress sendMessage fallback when Feishu quota is constrained/critical
+  const suppressFallback = (() => {
+    if (!isFeatureEnabled() || adapterKey !== AGENT_LARK) return false;
+    const level = getQuotaLedger()?.getDegradationLevel();
+    return level === 'constrained' || level === 'critical';
+  })();
+  const ok = await safeEditWithRetry(adapter, ctx.chatId, buffer.platformMsgId, display, { suppressFallback });
   if (ok) {
     bridgeLogger.debug(
       `[BridgeFlowDebug] edited sid=${sessionId} mid=${messageId} msg=${ok} contentLen=${display.length}`
     );
     buffer.platformMsgId = ok;
     buffer.lastDisplayHash = hash;
+    // ISSUE-166: record coalescer flush
+    getOrCreateCoalescer(messageId).recordFlush(buffer.text.length + buffer.reasoning.length);
   } else {
     bridgeLogger.warn(
       `[BridgeFlowDebug] edit-failed sid=${sessionId} mid=${messageId} msg=${buffer.platformMsgId} contentLen=${display.length}`

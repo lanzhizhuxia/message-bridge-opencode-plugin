@@ -19,6 +19,20 @@ const MIGRATIONS: Migration[] = [
       `CREATE INDEX idx_routing_updated_at ON routing_state(updated_at)`,
     ],
   },
+  {
+    version: 2,
+    up: [
+      `CREATE TABLE quota_ledger (
+        app_id TEXT NOT NULL,
+        month TEXT NOT NULL,
+        day TEXT NOT NULL,
+        call_count INTEGER NOT NULL DEFAULT 0,
+        last_updated INTEGER NOT NULL,
+        PRIMARY KEY (app_id, month, day)
+      )`,
+      `CREATE INDEX idx_quota_month ON quota_ledger(app_id, month)`,
+    ],
+  },
 ];
 
 export function runMigrations(): void {

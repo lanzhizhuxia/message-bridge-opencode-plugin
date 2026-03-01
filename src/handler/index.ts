@@ -9,9 +9,11 @@ import { globalState } from '../utils';
 import type { PendingAuthorizationState, PendingQuestionState } from './proxy';
 import { extractErrorMessage } from './shared';
 import { RoutingStore, isRoutingStoreEnabled } from '../store/routing-store';
-import { closeDb } from '../store/db';
+import { closeDb, isFeatureEnabled } from '../store/db';
+import { initQuotaLedger, resetQuotaLedger } from '../store/quota-ledger';
+import { resetAllCoalescers } from '../feishu/adaptive-coalescer';
+import { resetRateLimitMetrics } from '../feishu/rate-limit';
 import { startMetricsLogger, stopMetricsLogger } from './event/dispatch';
-
 type SessionContext = { chatId: string; senderId: string };
 type SelectedModel = { providerID: string; modelID: string; name?: string };
 
@@ -154,6 +156,13 @@ export async function startGlobalEventListener(api: OpencodeClient, mux: Adapter
   if (routingStore) {
     sweepTimer = setInterval(() => routingStore.sweepExpired(), 10 * 60 * 1000);
   }
+  // ISSUE-166 Phase 2: initialize QuotaLedger for Feishu adapter
+  if (isFeatureEnabled()) {
+    // Use process-level app identifier; actual Feishu app_id not needed since
+    // the bridge runs one Feishu app per process.
+    const appId = process.env.LARK_CODE_APP_ID || process.env.LARK_APP_ID || 'bridge';
+    initQuotaLedger(appId);
+  }
   startMetricsLogger();
 
 export function stopGlobalEventListener() {
@@ -185,6 +194,9 @@ export function stopGlobalEventListener() {
 }
   // ISSUE-166: cleanup
   stopMetricsLogger();
+  resetAllCoalescers();
+  resetQuotaLedger();
+  resetRateLimitMetrics();
   if (sweepTimer) {
     clearInterval(sweepTimer);
     sweepTimer = null;
