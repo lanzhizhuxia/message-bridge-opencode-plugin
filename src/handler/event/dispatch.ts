@@ -709,7 +709,11 @@ export async function dispatchEventByType(
 
   if (e.type === 'message.part.updated') {
     const pe = e as EventMessagePartUpdated;
-    const p = pe.properties.part;
+    const p = pe.properties?.part;
+    if (!p) {
+      bridgeLogger.warn('[BridgeFlow] part.updated missing properties.part, skipping');
+      return;
+    }
     bridgeLogger.debug(
       `[BridgeFlowDebug] part.updated sid=${p.sessionID} mid=${p.messageID} type=${p.type} deltaLen=${(pe.properties.delta || '').length}`
     );
@@ -727,7 +731,11 @@ export async function dispatchEventByType(
     }
     // Wire shape is expected to match message.part.updated (same properties.part + properties.delta)
     const pe = e as EventMessagePartUpdated;
-    const p = pe.properties.part;
+    const p = pe.properties?.part;
+    if (!p) {
+      bridgeLogger.warn('[BridgeFlow] part.delta missing properties.part, skipping');
+      return;
+    }
     bridgeLogger.debug(
       `[BridgeFlowDebug] part.delta sid=${p.sessionID} mid=${p.messageID} type=${p.type} deltaLen=${(pe.properties.delta || '').length}`
     );
